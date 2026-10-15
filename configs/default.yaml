@@ -1,0 +1,27 @@
+device: cuda
+data:
+  celeba_root: ../../datasets/celeba/extracted/celeba
+  lfw_root: ../../datasets/lfw
+  train_ratio: 0.7
+  max_images: null
+model:
+  image_size: 112
+  emb_dim: 128
+polyprotect:
+  m: 5
+  overlap: 4
+train:
+  protocol: full
+  epochs: 8
+  batch_size: 64
+  lr: 0.05
+  num_workers: 4
+  seed: 42
+eval:
+  batch_size: 64
+  max_pairs: null
+  n_irrev: 64
+paths:
+  checkpoint_dir: outputs/checkpoints/full
+  log_dir: outputs/logs/full
+  figure_dir: outputs/figures/full
