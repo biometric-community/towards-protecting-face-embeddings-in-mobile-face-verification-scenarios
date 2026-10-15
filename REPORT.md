@@ -28,7 +28,7 @@ unlinkability and irreversibility proxies.
 ## Unlinkability / irreversibility proxies
 
 - Same-subject different-key mean cosine: -0.007931429694561908
-- GD inversion mean recon cosine (known C,E): 0.19388081151311892
+- Random-search inversion mean recon cosine (known C,E): 0.19388081151311892
 
 ## Notes
 
