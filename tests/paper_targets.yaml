@@ -1,0 +1,22 @@
+# Published values from Hahn & Marcel, "Towards Protecting Face Embeddings in
+# Mobile Face Verification Scenarios", IEEE TBIOM 2022 (arXiv:2110.00434).
+source: arXiv:2110.00434
+tolerance_pp: 1.0
+
+# Table 2: dimensionality of P for n=128, m=5.
+table_2_dims: {0: 26, 1: 32, 2: 42, 3: 63, 4: 124}
+
+# Table 1: TMR (%) at FMR = 1%, Normal scenario.
+table_1_tmr_fmr_1pct:
+  facenet: {baseline: 99.87, overlap_4: 99.87}
+  idiap: {baseline: 99.85, overlap_4: 99.95}
+
+# Table 3: inversion success rate at FMR = 0.1%.
+table_3_inversion_fmr_0_1pct:
+  facenet: {0: 0.00, 1: 0.00, 2: 0.01, 3: 0.15, 4: 0.95}
+  idiap: {0: 0.00, 1: 0.00, 2: 0.01, 3: 0.15, 4: 0.96}
+
+# Table 4: Dsys for overlaps 0-4.
+table_4_dsys:
+  facenet: [0.14, 0.15, 0.15, 0.15, 0.16]
+  idiap: [0.09, 0.10, 0.10, 0.11, 0.12]
