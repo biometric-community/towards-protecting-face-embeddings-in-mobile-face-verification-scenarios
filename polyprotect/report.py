@@ -94,7 +94,7 @@ def write_report(cfg, train_s, eval_res, fig_dir: Path, path: Path) -> None:
         "## Unlinkability / irreversibility proxies",
         "",
         f"- Same-subject different-key mean cosine: {unlink.get('mean_cosine_same_subject_diff_keys')}",
-        f"- GD inversion mean recon cosine (known C,E): {irrev.get('mean_recon_cosine')}",
+        f"- Numerical-solver inversion mean recon cosine (known C,E): {irrev.get('mean_recon_cosine')}",
         "",
         "## Notes",
         "",

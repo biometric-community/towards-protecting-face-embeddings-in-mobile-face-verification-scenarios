@@ -48,11 +48,10 @@ class PolyProtect:
         self.stride = m - overlap
 
     def _starts(self, n: int) -> List[int]:
-        starts: List[int] = []
-        s = 0
-        while s < n:
-            starts.append(s)
-            s += self.stride
+        # Stop once every element of V is used (Sec. 3); only the last set may need padding.
+        starts: List[int] = [0]
+        while starts[-1] + self.m < n:
+            starts.append(starts[-1] + self.stride)
         return starts
 
     def transform_numpy(self, v: np.ndarray, coeffs: np.ndarray, exps: np.ndarray) -> np.ndarray:
@@ -71,7 +70,7 @@ class PolyProtect:
                 x = float(window[i])
                 e = int(exps[i])
                 c = float(coeffs[i])
-                acc += c * (np.sign(x) * (abs(x) ** e) if x != 0.0 else 0.0)
+                acc += c * x**e
             out.append(acc)
         return np.asarray(out, dtype=np.float64)
 
@@ -85,13 +84,11 @@ class PolyProtect:
         if need > n:
             v = torch.cat([v, torch.zeros(need - n, device=v.device, dtype=v.dtype)])
         c = torch.as_tensor(coeffs, device=v.device, dtype=v.dtype)
-        e = torch.as_tensor(exps, device=v.device, dtype=v.dtype)
+        e = torch.as_tensor(exps, device=v.device)
         outs = []
         for st in starts:
             window = v[st : st + m]
-            # sign(x) * |x|^e  (integer e via exp)
-            powered = torch.sign(window) * torch.pow(torch.abs(window) + 1e-12, e)
-            outs.append(torch.sum(c * powered))
+            outs.append(torch.sum(c * torch.pow(window, e)))
         out = torch.stack(outs)
         return F.normalize(out, p=2, dim=0)
 

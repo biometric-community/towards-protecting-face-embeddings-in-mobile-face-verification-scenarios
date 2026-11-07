@@ -12,6 +12,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import yaml
+from scipy.optimize import least_squares
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -36,20 +37,26 @@ def _device(cfg: dict, override: Optional[str] = None) -> torch.device:
     return torch.device(name)
 
 
+def equal_error_rate(scores: np.ndarray, labels: np.ndarray) -> float:
+    """Error rate at the threshold where FMR and FNMR are closest."""
+    mated = labels[np.argsort(scores)] == 1
+    if mated.all() or not mated.any():
+        return 1.0
+    fnmr = np.cumsum(mated) / mated.sum()
+    fmr = 1.0 - np.cumsum(~mated) / (~mated).sum()
+    i = int(np.argmin(np.abs(fmr - fnmr)))
+    return float(0.5 * (fmr[i] + fnmr[i]))
+
+
 def best_acc_eer(scores: np.ndarray, labels: np.ndarray) -> Tuple[float, float, float]:
     thresholds = np.linspace(scores.min(), scores.max(), 200)
-    best_acc, best_eer, best_t = 0.0, 1.0, 0.0
+    best_acc, best_t = 0.0, 0.0
     for t in thresholds:
         pred = (scores >= t).astype(np.int32)
         acc = float((pred == labels).mean())
         if acc > best_acc:
             best_acc, best_t = acc, float(t)
-        pos, neg = labels == 1, labels == 0
-        if pos.any() and neg.any():
-            fpr = float((pred[neg] == 1).mean())
-            fnr = float((pred[pos] == 0).mean())
-            best_eer = min(best_eer, 0.5 * (fpr + fnr))
-    return best_acc, best_eer, best_t
+    return best_acc, equal_error_rate(scores, labels), best_t
 
 
 def tar_at_far(scores: np.ndarray, labels: np.ndarray, far: float = 1e-2) -> float:
@@ -59,6 +66,16 @@ def tar_at_far(scores: np.ndarray, labels: np.ndarray, far: float = 1e-2) -> flo
         return float("nan")
     t = float(np.quantile(neg, 1.0 - far))
     return float((pos >= t).mean())
+
+
+def invert_template(
+    pp: PolyProtect, target: np.ndarray, coeffs: np.ndarray, exps: np.ndarray, dim: int
+) -> np.ndarray:
+    """Sec. 4.3 attack: solve the P -> V system numerically with C and E known."""
+    solved = least_squares(
+        lambda x: pp.transform_numpy(x, coeffs, exps) - target, np.full(dim, 0.01), max_nfev=60
+    )
+    return solved.x
 
 
 def _subject_from_rel(path: str) -> str:
@@ -97,9 +114,8 @@ def evaluate(cfg: dict, device_override: Optional[str] = None) -> Dict:
             user_params[subj] = sample_user_params(m, rng)
         return user_params[subj]
 
-    raw_scores, prot_scores, unlink_scores, labels = [], [], [], []
+    raw_scores, prot_scores, sce_scores, unlink_scores, labels = [], [], [], [], []
     emb_bank = []  # for irreversibility sample
-    prot_bank = []
     coeff_bank = []
 
     for idx, (a, b, y) in enumerate(tqdm(loader, desc="lfw", leave=False)):
@@ -115,6 +131,8 @@ def evaluate(cfg: dict, device_override: Optional[str] = None) -> Dict:
         pa = pp.transform(ea[0], ca, ea_p)
         pb = pp.transform(eb[0], cb, eb_p)
         prot_scores.append(float((pa * pb).sum().item()))
+        # Stolen Coefficients and Exponents: the query reuses the reference's C, E
+        sce_scores.append(float((pa * pp.transform(eb[0], ca, ea_p)).sum().item()))
 
         # unlinkability: same subject genuine pairs remapped with fresh keys
         if lab == 1:
@@ -125,16 +143,16 @@ def evaluate(cfg: dict, device_override: Optional[str] = None) -> Dict:
             unlink_scores.append(float((pa * pa2).sum().item()))
 
         if len(emb_bank) < int(cfg["eval"].get("n_irrev", 64)):
-            emb_bank.append(ea[0].cpu().numpy())
-            prot_bank.append(pa.cpu().numpy())
+            emb_bank.append(ea[0].cpu().numpy().astype(np.float64))
             coeff_bank.append((ca, ea_p))
 
     raw = np.asarray(raw_scores)
     prot = np.asarray(prot_scores)
+    sce = np.asarray(sce_scores)
     y = np.asarray(labels)
     results = {"verification": {}, "unlinkability": {}, "irreversibility": {}, "polyprotect": {"m": m, "overlap": overlap}}
 
-    for tag, s in (("baseline", raw), ("polyprotect", prot)):
+    for tag, s in (("baseline", raw), ("polyprotect", prot), ("polyprotect_sce", sce)):
         acc, eer, thr = best_acc_eer(s, y)
         tar = tar_at_far(s, y, 1e-2)
         results["verification"][tag] = {
@@ -155,40 +173,15 @@ def evaluate(cfg: dict, device_override: Optional[str] = None) -> Dict:
         }
         print(f"[unlink] mean_cos={u.mean():.4f}")
 
-    # Irreversibility proxy: best-of-N random search for Vhat matching P under known C,E
+    # Irreversibility: numerical P -> V inversion under known C,E
     irrev_sims = []
-    attack_rng = np.random.RandomState(seed + 7)
-    n_try = int(cfg["eval"].get("n_irrev_tries", 64))
-    for v_np, p_np, (c, e) in zip(emb_bank, prot_bank, coeff_bank):
-        best_sim = -1.0
-        target = p_np / (np.linalg.norm(p_np) + 1e-12)
-        for _ in range(n_try):
-            cand = attack_rng.normal(size=v_np.shape).astype(np.float64)
-            cand /= np.linalg.norm(cand) + 1e-12
-            pred = pp.transform_numpy(cand, c, e)
-            pred /= np.linalg.norm(pred) + 1e-12
-            if float(np.dot(pred, target)) > 0.995:
-                # matched protected template — score similarity to true V
-                best_sim = max(best_sim, float(np.dot(cand, v_np / (np.linalg.norm(v_np) + 1e-12))))
-        if best_sim < 0:
-            # no near match; report cosine of closest protected match attempt
-            closest = -1.0
-            best_cand = None
-            for _ in range(n_try):
-                cand = attack_rng.normal(size=v_np.shape).astype(np.float64)
-                cand /= np.linalg.norm(cand) + 1e-12
-                pred = pp.transform_numpy(cand, c, e)
-                pred /= np.linalg.norm(pred) + 1e-12
-                sc = float(np.dot(pred, target))
-                if sc > closest:
-                    closest = sc
-                    best_cand = cand
-            best_sim = float(np.dot(best_cand, v_np / (np.linalg.norm(v_np) + 1e-12)))
-        irrev_sims.append(best_sim)
+    for v_np, (c, e) in zip(emb_bank, coeff_bank):
+        v_hat = invert_template(pp, pp.transform_numpy(v_np, c, e), c, e, v_np.shape[0])
+        irrev_sims.append(float(np.dot(v_hat, v_np) / (np.linalg.norm(v_hat) * np.linalg.norm(v_np) + 1e-12)))
     results["irreversibility"] = {
         "mean_recon_cosine": float(np.mean(irrev_sims)) if irrev_sims else None,
         "n": len(irrev_sims),
-        "note": "Random-search inversion with known C,E; lower = harder to recover V",
+        "note": "Numerical-solver inversion with known C,E; lower = harder to recover V",
     }
     print(f"[irrev] mean_recon_cos={results['irreversibility']['mean_recon_cosine']}")
 
